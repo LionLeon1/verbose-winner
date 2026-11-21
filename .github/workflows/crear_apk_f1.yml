@@ -1,0 +1,88 @@
+name: Crear APK APEX GP 24 (Flutter)
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  compilar:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 1. Descargar repositorio
+        uses: actions/checkout@v4
+
+      - name: 2. Configurar Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: 3. Instalar Flutter estable (3.29.3)
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.29.3'
+          channel: 'stable'
+
+      - name: 4. Crear proyecto Android y desempaquetar última versión del juego
+        run: |
+          flutter create --platforms=android --org com.apexlife --project-name apex_life_f1 app_build
+          python3 -c '
+          import glob, json, os, re, zipfile
+
+          def orden_natural(texto):
+              return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", texto)]
+
+          candidatos = []
+
+          for path in sorted(glob.glob("**/*.json", recursive=True), key=orden_natural):
+              if path.startswith("app_build/"):
+                  continue
+              try:
+                  with open(path, "r", encoding="utf-8") as f:
+                      data = json.load(f)
+                  if isinstance(data, dict) and "lib/main.dart" in data:
+                      candidatos.append((path, data))
+              except Exception:
+                  pass
+
+          for zpath in sorted(glob.glob("**/*.zip", recursive=True), key=orden_natural):
+              if zpath.startswith("app_build/"):
+                  continue
+              try:
+                  with zipfile.ZipFile(zpath, "r") as zf:
+                      for name in sorted(zf.namelist(), key=orden_natural):
+                          if name.endswith(".json"):
+                              data = json.loads(zf.read(name).decode("utf-8"))
+                              if isinstance(data, dict) and "lib/main.dart" in data:
+                                  candidatos.append((f"{zpath}:{name}", data))
+              except Exception:
+                  pass
+
+          if not candidatos:
+              archivos = [p for p in glob.glob("**/*", recursive=True) if not p.startswith("app_build/") and os.path.isfile(p)]
+              raise FileNotFoundError(
+                  "No se encontró el archivo apex_life_f1_v20.json en el repositorio. "
+                  f"Archivos detectados: {archivos}"
+              )
+
+          elegido = candidatos[-1]
+          print("Desempaquetando:", elegido[0])
+          for rel_path, content in elegido[1].items():
+              full_path = os.path.join("app_build", rel_path)
+              os.makedirs(os.path.dirname(full_path), exist_ok=True)
+              with open(full_path, "w", encoding="utf-8") as f:
+                  f.write(content)
+          '
+
+      - name: 5. Compilar APK
+        working-directory: app_build
+        run: |
+          flutter pub get
+          flutter build apk --release
+
+      - name: 6. Subir APK descargable
+        uses: actions/upload-artifact@v4
+        with:
+          name: apex-life-f1-apk
+          path: app_build/build/app/outputs/flutter-apk/app-release.apk
